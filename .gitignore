@@ -1,0 +1,29 @@
+# Rust
+/target/
+Cargo.lock
+
+# Claude
+.claude/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files
+*.tbl
+data/generator/*.tbl
+
+# Results (keep .gitkeep)
+results/*.sqlite
+results/*.jsonl
+results/*.csv
+!results/.gitkeep
+
+# Docker volumes
+docker/mysql_data/

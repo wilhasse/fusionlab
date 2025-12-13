@@ -1,0 +1,10 @@
+[package]
+name = "fusionlab-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mysql_async = "0.34"
+tokio = { version = "1", features = ["full"] }
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
