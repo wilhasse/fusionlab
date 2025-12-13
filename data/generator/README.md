@@ -1,119 +1,173 @@
 # SSB Data Generator
 
-This guide explains how to generate Star Schema Benchmark (SSB) data for FusionLab.
+This directory contains scripts to generate Star Schema Benchmark (SSB) test data for FusionLab.
 
-## Prerequisites
-
-- C compiler (gcc)
-- MySQL client
-- Docker (for MySQL container)
-
-## Step 1: Clone and Build dbgen
+## Quick Start
 
 ```bash
-# Clone the TiDB bench repository
-git clone https://github.com/pingcap/tidb-bench.git
-cd tidb-bench/ssb/dbgen
+# 1. Setup dbgen (download and compile)
+./setup-dbgen.sh
 
-# Build dbgen
-make
+# 2. Generate data (1GB scale factor)
+./generate.sh -s 1
+
+# 3. Load into MySQL
+../../infra/pulumi/load-data.sh 10.1.0.50
 ```
 
-## Step 2: Generate Data
+## Scripts
+
+### setup-dbgen.sh
+
+Downloads and compiles the SSB dbgen tool from [tidb-bench](https://github.com/pingcap/tidb-bench).
 
 ```bash
-# Generate 1GB scale factor (good for development/testing)
-./dbgen -s 1 -T a
-
-# This creates:
-# - customer.tbl (~2.4 MB at SF=1)
-# - date.tbl     (~24 KB)
-# - lineorder.tbl (~600 MB at SF=1)
-# - part.tbl     (~23 MB at SF=1)
-# - supplier.tbl (~200 KB)
+./setup-dbgen.sh
 ```
 
-Scale factor options:
-- `-s 1` = ~600K lineorder rows (development)
-- `-s 10` = ~60M lineorder rows (testing)
-- `-s 100` = ~600M lineorder rows (production benchmarks)
+**Requirements:**
+- `gcc` (build-essential)
+- `git`
 
-## Step 3: Start MySQL
+### generate.sh
+
+Generates SSB data with configurable scale factor.
 
 ```bash
-cd /path/to/fusionlab/docker
-docker compose up -d
+# Usage
+./generate.sh [OPTIONS]
 
-# Wait for MySQL to be ready
-docker compose logs -f mysql
-# Look for "ready for connections"
+# Options
+  -s SCALE    Scale factor (1=1GB, 10=10GB, 100=100GB). Default: 1
+  -o DIR      Output directory for .tbl files. Default: current directory
+  -c          Clean existing .tbl files before generating
+  -h          Show help
+
+# Examples
+./generate.sh -s 1              # Generate 1GB dataset
+./generate.sh -s 10 -c          # Generate 10GB dataset, clean first
+./generate.sh -s 1 -o /tmp/ssb  # Generate to specific directory
 ```
 
-## Step 4: Load Data into MySQL
+## Scale Factor Reference
+
+| SF | lineorder rows | Total Size | Use Case |
+|----|----------------|------------|----------|
+| 1  | ~6 million     | ~600 MB    | Development, quick tests |
+| 10 | ~60 million    | ~6 GB      | Performance testing |
+| 100| ~600 million   | ~60 GB     | Production benchmarks |
+
+### Row Counts at SF=1
+
+| Table     | Rows     | Size    |
+|-----------|----------|---------|
+| lineorder | 6,001,171| ~600 MB |
+| customer  | 30,000   | ~2.4 MB |
+| part      | 200,000  | ~23 MB  |
+| supplier  | 2,000    | ~200 KB |
+| date      | 2,556    | ~24 KB  |
+
+## Loading Data into MySQL
+
+### Option 1: Use the load script
 
 ```bash
-# Connect to MySQL
-mysql -h 127.0.0.1 -u root -proot ssb
+# Load into VM at default IP (10.1.0.50)
+../../infra/pulumi/load-data.sh
 
-# Enable local infile if needed
-SET GLOBAL local_infile = 1;
+# Load into specific VM
+../../infra/pulumi/load-data.sh 10.1.0.51 .
+```
 
-# Load dimension tables first
+### Option 2: Manual loading
+
+```bash
+# Copy files to VM
+scp *.tbl ubuntu@10.1.0.50:~/
+
+# SSH into VM and load
+ssh ubuntu@10.1.0.50
+mysql -u root -proot --local-infile=1 ssb << 'EOF'
+SET FOREIGN_KEY_CHECKS = 0;
+
 LOAD DATA LOCAL INFILE 'customer.tbl' INTO TABLE customer
-FIELDS TERMINATED BY '|' LINES TERMINATED BY '\n';
+  FIELDS TERMINATED BY '|' LINES TERMINATED BY '|\n';
 
 LOAD DATA LOCAL INFILE 'supplier.tbl' INTO TABLE supplier
-FIELDS TERMINATED BY '|' LINES TERMINATED BY '\n';
+  FIELDS TERMINATED BY '|' LINES TERMINATED BY '|\n';
 
 LOAD DATA LOCAL INFILE 'part.tbl' INTO TABLE part
-FIELDS TERMINATED BY '|' LINES TERMINATED BY '\n';
+  FIELDS TERMINATED BY '|' LINES TERMINATED BY '|\n';
 
 LOAD DATA LOCAL INFILE 'date.tbl' INTO TABLE `date`
-FIELDS TERMINATED BY '|' LINES TERMINATED BY '\n';
+  FIELDS TERMINATED BY '|' LINES TERMINATED BY '|\n';
 
-# Load fact table (largest)
 LOAD DATA LOCAL INFILE 'lineorder.tbl' INTO TABLE lineorder
-FIELDS TERMINATED BY '|' LINES TERMINATED BY '\n';
+  FIELDS TERMINATED BY '|' LINES TERMINATED BY '|\n';
+
+SET FOREIGN_KEY_CHECKS = 1;
+EOF
 ```
 
-## Step 5: Verify Data
+## Verifying Data
 
 ```bash
 # Using FusionLab CLI
+fusionlab mysql "SELECT 'lineorder' as t, COUNT(*) as cnt FROM lineorder
+UNION ALL SELECT 'customer', COUNT(*) FROM customer
+UNION ALL SELECT 'supplier', COUNT(*) FROM supplier
+UNION ALL SELECT 'part', COUNT(*) FROM part
+UNION ALL SELECT 'date', COUNT(*) FROM \`date\`"
+
+# Or individual tables
 fusionlab mysql "SELECT COUNT(*) FROM lineorder"
-fusionlab mysql "SELECT COUNT(*) FROM customer"
-fusionlab mysql "SELECT COUNT(*) FROM supplier"
-fusionlab mysql "SELECT COUNT(*) FROM part"
-fusionlab mysql "SELECT COUNT(*) FROM \`date\`"
 ```
 
-Expected row counts at SF=1:
-- lineorder: ~6,001,171
-- customer: ~30,000
-- supplier: ~2,000
-- part: ~200,000
-- date: ~2,556
+## Running SSB Queries
 
-## Alternative: Use Your Existing SSB Data
+After loading data, run the benchmark queries:
 
-If you already have SSB data generated from `github.com/wilhasse/courses/tree/main/db/ssb`, you can:
+```bash
+# Run a specific query
+fusionlab mysql --file ../queries/q1.1.sql
 
-1. Copy the `.tbl` files to this directory
-2. Follow Step 4 to load them into the FusionLab MySQL container
+# Run with EXPLAIN
+fusionlab mysql --file ../queries/q1.1.sql --explain
+```
 
 ## Troubleshooting
 
-### "local_infile" error
-```sql
-SET GLOBAL local_infile = 1;
+### "gcc not found"
+```bash
+sudo apt update && sudo apt install build-essential
 ```
-Or add to docker-compose.yml: `--local-infile=1`
 
-### Permission denied on files
-Make sure the `.tbl` files are readable by the MySQL container user.
+### "dbgen compilation fails"
+The setup script creates a compatible Makefile. If issues persist, manually check:
+```bash
+cd dbgen
+make clean
+make
+```
 
-### Slow loading
-For large datasets, consider:
-- Disabling indexes before load, re-enabling after
-- Increasing `innodb_buffer_pool_size`
-- Using `LOAD DATA` with `CONCURRENT` option
+### "local_infile" error during load
+The MySQL VMs are configured with `local_infile=1`. If using Docker:
+```bash
+docker exec -it mysql mysql -u root -proot --local-infile=1 ssb
+```
+
+### Slow data loading
+For large datasets (SF >= 10):
+1. Increase MySQL buffer pool: `SET GLOBAL innodb_buffer_pool_size = 2147483648;`
+2. Disable binary logging temporarily
+3. Use parallel loading if available
+
+## Using Existing Data
+
+If you already have SSB data from another source (e.g., `github.com/wilhasse/courses/db/ssb`):
+
+1. Copy the `.tbl` files to this directory
+2. Run the load script:
+   ```bash
+   ../../infra/pulumi/load-data.sh 10.1.0.50 .
+   ```

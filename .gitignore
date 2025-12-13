@@ -18,6 +18,7 @@ Thumbs.db
 # Data files
 *.tbl
 data/generator/*.tbl
+data/generator/dbgen/
 
 # Results (keep .gitkeep)
 results/*.sqlite
