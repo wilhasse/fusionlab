@@ -3,8 +3,8 @@
 //! A CLI tool for running queries against different execution strategies
 //! and comparing their performance.
 
-use clap::{Parser, Subcommand};
-use fusionlab_core::{MySQLConfig, MySQLRunner};
+use clap::{Parser, Subcommand, ValueEnum};
+use fusionlab_core::{DataFusionRunner, MySQLConfig, MySQLRunner};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -14,6 +14,22 @@ use std::path::PathBuf;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, ValueEnum)]
+enum DataSource {
+    /// Use in-memory SSB sample data
+    Mem,
+    /// Load data from CSV files (specify --csv-dir)
+    Csv,
+}
+
+#[derive(Clone, ValueEnum)]
+enum ExecutionMode {
+    /// Collect all results at once
+    Collect,
+    /// Stream results incrementally
+    Stream,
 }
 
 #[derive(Subcommand)]
@@ -60,9 +76,43 @@ enum Commands {
         #[arg(long, default_value = "10")]
         show_rows: usize,
     },
-    // Future commands (Step 1+):
-    // Df { ... }      - Run via DataFusion
-    // Explain { ... } - DataFusion EXPLAIN
+
+    /// Run a query using DataFusion (local Arrow execution)
+    Df {
+        /// SQL query to execute
+        #[arg(group = "input")]
+        sql: Option<String>,
+
+        /// Read SQL from a file
+        #[arg(short, long, group = "input")]
+        file: Option<PathBuf>,
+
+        /// Data source to use
+        #[arg(long, value_enum, default_value = "mem")]
+        source: DataSource,
+
+        /// Directory containing CSV files (for --source=csv)
+        #[arg(long)]
+        csv_dir: Option<PathBuf>,
+
+        /// Execution mode
+        #[arg(long, value_enum, default_value = "collect")]
+        mode: ExecutionMode,
+
+        /// Show logical plan
+        #[arg(short, long)]
+        explain: bool,
+
+        /// Show physical plan
+        #[arg(short, long)]
+        physical: bool,
+
+        /// Show first N rows of results (0 = don't show rows)
+        #[arg(long, default_value = "10")]
+        show_rows: usize,
+    },
+    // Future commands:
+    // Explain { ... } - DataFusion EXPLAIN (detailed)
     // Analyze { ... } - DataFusion EXPLAIN ANALYZE
     // Semijoin { ... } - Semijoin reduction strategy
     // Replay { ... }  - Replay workload
@@ -149,6 +199,117 @@ async fn main() -> anyhow::Result<()> {
             }
 
             runner.close().await;
+        }
+
+        Commands::Df {
+            sql,
+            file,
+            source,
+            csv_dir,
+            mode,
+            explain,
+            physical,
+            show_rows,
+        } => {
+            // Get SQL from argument or file
+            let sql = match (sql, file) {
+                (Some(s), _) => s,
+                (_, Some(f)) => std::fs::read_to_string(&f)
+                    .map_err(|e| anyhow::anyhow!("Failed to read file {:?}: {}", f, e))?,
+                (None, None) => {
+                    anyhow::bail!("Either SQL query or --file must be provided");
+                }
+            };
+
+            let runner = DataFusionRunner::new();
+
+            // Register data source
+            match source {
+                DataSource::Mem => {
+                    println!("[DataFusion] Using in-memory SSB sample data");
+                    runner
+                        .register_ssb_sample()
+                        .map_err(|e| anyhow::anyhow!("Failed to register sample data: {}", e))?;
+                }
+                DataSource::Csv => {
+                    let csv_dir = csv_dir.ok_or_else(|| {
+                        anyhow::anyhow!("--csv-dir is required when using --source=csv")
+                    })?;
+                    println!("[DataFusion] Loading CSV files from {:?}", csv_dir);
+
+                    // Register SSB tables from CSV files
+                    for table in &["lineorder", "customer", "supplier", "part", "date"] {
+                        let path = csv_dir.join(format!("{}.csv", table));
+                        if path.exists() {
+                            runner
+                                .register_csv(table, path.to_str().unwrap())
+                                .await
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to register {}: {}", table, e)
+                                })?;
+                            println!("  Registered table: {}", table);
+                        } else {
+                            println!("  Warning: {} not found at {:?}", table, path);
+                        }
+                    }
+                }
+            }
+            println!();
+
+            // Print query
+            println!("Query: {}", sql.trim());
+            println!();
+
+            // Show logical plan if requested
+            if explain {
+                println!("[Logical Plan]");
+                let plan = runner
+                    .explain(&sql)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to get explain: {}", e))?;
+                println!("{}", plan);
+                println!();
+            }
+
+            // Show physical plan if requested
+            if physical {
+                println!("[Physical Plan]");
+                let plan = runner
+                    .explain_physical(&sql)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to get physical plan: {}", e))?;
+                println!("{}", plan);
+                println!();
+            }
+
+            // Run the query
+            let result = match mode {
+                ExecutionMode::Collect => {
+                    println!("[Execution Mode: collect]");
+                    runner
+                        .run_query_collect(&sql)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?
+                }
+                ExecutionMode::Stream => {
+                    println!("[Execution Mode: stream]");
+                    runner
+                        .run_query_stream(&sql)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?
+                }
+            };
+
+            // Print results
+            println!("Rows:  {}", result.row_count);
+            println!("Time:  {:.2}ms", result.duration_ms);
+
+            // Show sample rows if requested
+            if show_rows > 0 && result.row_count > 0 {
+                println!();
+                println!("[Results]");
+                println!("{}", result.to_table());
+            }
         }
     }
 

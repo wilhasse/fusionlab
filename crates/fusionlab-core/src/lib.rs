@@ -1,6 +1,11 @@
 //! FusionLab Core - Query execution and metrics
 //!
-//! Provides MySQL query runner with timing and EXPLAIN support.
+//! Provides MySQL query runner with timing and EXPLAIN support,
+//! and DataFusion local query execution with Arrow batches.
+
+mod datafusion;
+
+pub use datafusion::{DataFusionRunner, DfQueryResult};
 
 use mysql_async::{prelude::*, Pool, Row};
 use std::time::Instant;
@@ -12,6 +17,8 @@ pub enum FusionLabError {
     MySQL(#[from] mysql_async::Error),
     #[error("Connection error: {0}")]
     Connection(String),
+    #[error("DataFusion error: {0}")]
+    DataFusion(String),
 }
 
 pub type Result<T> = std::result::Result<T, FusionLabError>;

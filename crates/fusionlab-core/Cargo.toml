@@ -8,3 +8,7 @@ mysql_async = "0.34"
 tokio = { version = "1", features = ["full"] }
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
+
+# DataFusion (includes Arrow)
+datafusion = "44"
+futures = "0.3"
