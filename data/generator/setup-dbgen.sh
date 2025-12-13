@@ -121,20 +121,11 @@ EOF
     cd "$SCRIPT_DIR"
 }
 
-# Create convenience symlink
-create_symlink() {
-    if [[ -f "$DBGEN_DIR/dbgen" ]]; then
-        ln -sf "$DBGEN_DIR/dbgen" "$SCRIPT_DIR/dbgen"
-        log "Created symlink: $SCRIPT_DIR/dbgen -> $DBGEN_DIR/dbgen"
-    fi
-}
-
 # Main
 log "=== SSB dbgen Setup ==="
 check_requirements
 download_dbgen
 compile_dbgen
-create_symlink
 
 echo ""
 log "=== Setup Complete ==="
