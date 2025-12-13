@@ -73,11 +73,11 @@ EOF'
 # Verify row counts
 log "Verifying row counts..."
 ssh "$SSH_USER@$VM_IP" 'mysql -u root -proot -e "
-SELECT \"customer\" AS table_name, COUNT(*) AS rows FROM ssb.customer
-UNION ALL SELECT \"supplier\", COUNT(*) FROM ssb.supplier
-UNION ALL SELECT \"part\", COUNT(*) FROM ssb.part
-UNION ALL SELECT \"date\", COUNT(*) FROM ssb.\`date\`
-UNION ALL SELECT \"lineorder\", COUNT(*) FROM ssb.lineorder;
+SELECT 'customer' AS table_name, COUNT(*) AS cnt FROM ssb.customer
+UNION ALL SELECT 'supplier', COUNT(*) FROM ssb.supplier
+UNION ALL SELECT 'part', COUNT(*) FROM ssb.part
+UNION ALL SELECT 'date', COUNT(*) FROM ssb.\`date\`
+UNION ALL SELECT 'lineorder', COUNT(*) FROM ssb.lineorder;
 "'
 
 # Clean up .tbl files on VM
