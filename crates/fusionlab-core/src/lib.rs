@@ -4,8 +4,10 @@
 //! and DataFusion local query execution with Arrow batches.
 
 mod datafusion;
+mod ibd_provider;
 
 pub use datafusion::{DataFusionRunner, DfQueryResult};
+pub use ibd_provider::IbdTableProvider;
 
 use mysql_async::{prelude::*, Pool, Row};
 use std::time::Instant;
@@ -19,6 +21,8 @@ pub enum FusionLabError {
     Connection(String),
     #[error("DataFusion error: {0}")]
     DataFusion(String),
+    #[error("IBD reader error: {0}")]
+    IbdReader(String),
 }
 
 pub type Result<T> = std::result::Result<T, FusionLabError>;

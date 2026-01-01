@@ -1,0 +1,11 @@
+[package]
+name = "fusionlab-ibd"
+version.workspace = true
+edition.workspace = true
+description = "FFI bindings to percona-parser for reading InnoDB .ibd files"
+
+[build-dependencies]
+
+[dependencies]
+libc = "0.2"
+thiserror = "1"

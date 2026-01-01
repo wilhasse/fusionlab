@@ -10,9 +10,11 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::*;
 use futures::StreamExt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::ibd_provider::IbdTableProvider;
 use crate::FusionLabError;
 
 /// Result of running a DataFusion query
@@ -82,6 +84,39 @@ impl DataFusionRunner {
         self.ctx
             .register_batch(table_name, batch)
             .map_err(|e| FusionLabError::DataFusion(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Register an InnoDB .ibd file as a table
+    ///
+    /// # Arguments
+    /// * `table_name` - Name to register the table as (or None to use the table's actual name)
+    /// * `ibd_path` - Path to the .ibd file
+    /// * `sdi_path` - Path to the SDI JSON file (from ibd2sdi)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let runner = DataFusionRunner::new();
+    /// runner.register_ibd(None, "/var/lib/mysql/mydb/mytable.ibd", "/tmp/mytable.json")?;
+    /// let result = runner.run_query_collect("SELECT * FROM mytable").await?;
+    /// ```
+    pub fn register_ibd<P: AsRef<Path>, Q: AsRef<Path>>(
+        &self,
+        table_name: Option<&str>,
+        ibd_path: P,
+        sdi_path: Q,
+    ) -> Result<(), FusionLabError> {
+        let provider = IbdTableProvider::try_new(ibd_path, sdi_path)
+            .map_err(|e| FusionLabError::IbdReader(e.to_string()))?;
+
+        let name = table_name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| provider.table_name().to_string());
+
+        self.ctx
+            .register_table(&name, Arc::new(provider))
+            .map_err(|e| FusionLabError::DataFusion(e.to_string()))?;
+
         Ok(())
     }
 
@@ -476,5 +511,28 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.row_count, 10);
+    }
+
+    #[tokio::test]
+    async fn test_ibd_table_provider() {
+        let runner = DataFusionRunner::new();
+
+        let ibd_path = "/home/cslog/mysql/percona-parser/tests/types_test.ibd";
+        let sdi_path = "/home/cslog/mysql/percona-parser/tests/types_test_sdi.json";
+
+        // Register the IBD table (table name is 'types_fixture' in SDI)
+        runner.register_ibd(None, ibd_path, sdi_path).unwrap();
+
+        // Query the table using its actual name from the SDI
+        let result = runner
+            .run_query_collect("SELECT * FROM types_fixture LIMIT 5")
+            .await
+            .unwrap();
+
+        println!("Rows: {}", result.row_count);
+        println!("Duration: {:.2}ms", result.duration_ms);
+        println!("{}", result.to_table());
+
+        assert!(result.row_count > 0);
     }
 }
