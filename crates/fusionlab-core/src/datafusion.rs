@@ -465,6 +465,25 @@ fn create_sample_date() -> Result<RecordBatch, FusionLabError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn ibd_available() -> bool {
+        if let Ok(path) = std::env::var("IBD_READER_LIB_PATH") {
+            let lib_path = Path::new(&path);
+            let lib_found = lib_path.join("libibd_reader.so").exists()
+                || lib_path.join("libibd_reader.dylib").exists()
+                || lib_path.join("ibd_reader.dll").exists();
+            if lib_found {
+                return true;
+            }
+        }
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let default_path = manifest_dir.join("../../percona-parser/build");
+        default_path.join("libibd_reader.so").exists()
+            || default_path.join("libibd_reader.dylib").exists()
+            || default_path.join("ibd_reader.dll").exists()
+    }
 
     #[tokio::test]
     async fn test_simple_query() {
@@ -519,6 +538,10 @@ mod tests {
 
         let ibd_path = "/home/cslog/mysql/percona-parser/tests/types_test.ibd";
         let sdi_path = "/home/cslog/mysql/percona-parser/tests/types_test_sdi.json";
+
+        if !ibd_available() || !Path::new(ibd_path).exists() || !Path::new(sdi_path).exists() {
+            return;
+        }
 
         // Register the IBD table (table name is 'types_fixture' in SDI)
         runner.register_ibd(None, ibd_path, sdi_path).unwrap();

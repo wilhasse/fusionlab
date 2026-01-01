@@ -344,7 +344,6 @@ impl ColumnBuilder {
 }
 
 struct IbdStreamState {
-    _reader: IbdReader,
     table: fusionlab_ibd::IbdTable,
     projected_columns: Vec<ProjectedColumn>,
     schema: SchemaRef,
@@ -379,7 +378,6 @@ impl IbdStreamState {
             .collect();
 
         Ok(Self {
-            _reader: reader,
             table,
             projected_columns,
             schema,

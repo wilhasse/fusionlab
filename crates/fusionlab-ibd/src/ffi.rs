@@ -124,7 +124,7 @@ pub struct IbdColumnValue {
     pub formatted: [c_char; 256],
 }
 
-// Linking to libibd_reader.so
+#[cfg(ibd_reader_available)]
 #[link(name = "ibd_reader")]
 extern "C" {
     // Library initialization
@@ -179,4 +179,103 @@ extern "C" {
     pub fn ibd_close_table(table: IbdTableHandle);
 
     pub fn ibd_get_row_count(table: IbdTableHandle) -> u64;
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_init() -> c_int {
+    IbdResult::ErrorNotImplemented as c_int
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_cleanup() {}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_get_version() -> *const c_char {
+    std::ptr::null()
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_reader_create() -> IbdReaderHandle {
+    std::ptr::null_mut()
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_reader_destroy(_reader: IbdReaderHandle) {}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_reader_get_error(_reader: IbdReaderHandle) -> *const c_char {
+    std::ptr::null()
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_reader_set_debug(_reader: IbdReaderHandle, _enable: c_int) {}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_open_table(
+    _reader: IbdReaderHandle,
+    _ibd_path: *const c_char,
+    _sdi_json_path: *const c_char,
+    _table_out: *mut IbdTableHandle,
+) -> c_int {
+    IbdResult::ErrorNotImplemented as c_int
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_get_table_info(
+    _table: IbdTableHandle,
+    _table_name: *mut c_char,
+    _table_name_size: size_t,
+    _column_count: *mut u32,
+) -> c_int {
+    IbdResult::ErrorNotImplemented as c_int
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_get_column_info(
+    _table: IbdTableHandle,
+    _column_index: u32,
+    _name: *mut c_char,
+    _name_size: size_t,
+    _col_type: *mut c_int,
+) -> c_int {
+    IbdResult::ErrorNotImplemented as c_int
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_read_row(_table: IbdTableHandle, _row_out: *mut IbdRowHandle) -> c_int {
+    IbdResult::ErrorNotImplemented as c_int
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_row_column_count(_row: IbdRowHandle) -> u32 {
+    0
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_row_get_column(
+    _row: IbdRowHandle,
+    _column_index: u32,
+    _value: *mut IbdColumnValue,
+) -> c_int {
+    IbdResult::ErrorNotImplemented as c_int
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_row_to_string(
+    _row: IbdRowHandle,
+    _buffer: *mut c_char,
+    _buffer_size: size_t,
+) -> size_t {
+    0
+}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_free_row(_row: IbdRowHandle) {}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_close_table(_table: IbdTableHandle) {}
+
+#[cfg(not(ibd_reader_available))]
+pub unsafe fn ibd_get_row_count(_table: IbdTableHandle) -> u64 {
+    0
 }

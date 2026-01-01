@@ -99,10 +99,14 @@ fn ensure_init() -> Result<(), IbdError> {
     });
 
     unsafe {
-        if INIT_RESULT == 0 {
+        let result = IbdResult::from(INIT_RESULT);
+        if result == IbdResult::Success {
             Ok(())
         } else {
-            Err(IbdError::Library("Failed to initialize library".to_string()))
+            Err(ibd_error_from_result(
+                result,
+                Some("Failed to initialize library".to_string()),
+            ))
         }
     }
 }
@@ -281,6 +285,9 @@ pub struct IbdTable {
     columns: Vec<ColumnInfo>,
 }
 
+// The table handle is only moved across threads, never shared concurrently.
+unsafe impl Send for IbdTable {}
+
 impl IbdTable {
     /// Get table name
     pub fn name(&self) -> &str {
@@ -350,6 +357,9 @@ impl Drop for IbdTable {
 pub struct IbdReader {
     handle: ffi::IbdReaderHandle,
 }
+
+// Reader handles are not thread-safe to share, but safe to move between threads.
+unsafe impl Send for IbdReader {}
 
 impl IbdReader {
     /// Create a new reader
