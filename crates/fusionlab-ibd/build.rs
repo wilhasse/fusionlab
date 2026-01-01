@@ -1,9 +1,19 @@
 fn main() {
     // Link to libibd_reader.so from percona-parser
+    let manifest_dir =
+        std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let lib_path = std::env::var("IBD_READER_LIB_PATH")
-        .unwrap_or_else(|_| "/home/cslog/mysql/percona-parser/build".to_string());
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| manifest_dir.join("../../percona-parser/build"));
 
-    println!("cargo:rustc-link-search=native={}", lib_path);
+    if !lib_path.exists() {
+        println!(
+            "cargo:warning=IBD reader library path not found: {}",
+            lib_path.display()
+        );
+    }
+
+    println!("cargo:rustc-link-search=native={}", lib_path.display());
     println!("cargo:rustc-link-lib=dylib=ibd_reader");
 
     // Re-run if environment variable changes

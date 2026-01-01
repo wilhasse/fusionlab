@@ -17,6 +17,7 @@ pub mod ffi;
 
 use ffi::{IbdColumnType, IbdResult};
 use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
 use std::path::Path;
 use std::ptr;
 use std::sync::Once;
@@ -34,16 +35,24 @@ pub enum IbdError {
     FileNotFound(String),
     #[error("File read error: {0}")]
     FileRead(String),
+    #[error("File write error: {0}")]
+    FileWrite(String),
     #[error("Invalid file format: {0}")]
     InvalidFormat(String),
+    #[error("Compression error")]
+    Compression,
     #[error("Decompression error")]
     Decompression,
+    #[error("Encryption error")]
+    Encryption,
     #[error("Decryption error")]
     Decryption,
     #[error("Memory allocation error")]
     Memory,
     #[error("Not implemented")]
     NotImplemented,
+    #[error("Keyring error")]
+    Keyring,
     #[error("Library error: {0}")]
     Library(String),
     #[error("No more rows")]
@@ -56,16 +65,28 @@ impl From<IbdResult> for Result<(), IbdError> {
     fn from(result: IbdResult) -> Self {
         match result {
             IbdResult::Success => Ok(()),
-            IbdResult::ErrorInvalidParam => Err(IbdError::InvalidParam),
-            IbdResult::ErrorFileNotFound => Err(IbdError::FileNotFound(String::new())),
-            IbdResult::ErrorFileRead => Err(IbdError::FileRead(String::new())),
-            IbdResult::ErrorInvalidFormat => Err(IbdError::InvalidFormat(String::new())),
-            IbdResult::ErrorDecompression => Err(IbdError::Decompression),
-            IbdResult::ErrorDecryption => Err(IbdError::Decryption),
-            IbdResult::ErrorMemory => Err(IbdError::Memory),
-            IbdResult::ErrorNotImplemented => Err(IbdError::NotImplemented),
-            _ => Err(IbdError::Library("Unknown error".to_string())),
+            _ => Err(ibd_error_from_result(result, None)),
         }
+    }
+}
+
+fn ibd_error_from_result(result: IbdResult, message: Option<String>) -> IbdError {
+    let msg = message.unwrap_or_else(|| "Unknown error".to_string());
+    match result {
+        IbdResult::Success => IbdError::Library("Unexpected success".to_string()),
+        IbdResult::ErrorInvalidParam => IbdError::InvalidParam,
+        IbdResult::ErrorFileNotFound => IbdError::FileNotFound(msg),
+        IbdResult::ErrorFileRead => IbdError::FileRead(msg),
+        IbdResult::ErrorFileWrite => IbdError::FileWrite(msg),
+        IbdResult::ErrorInvalidFormat => IbdError::InvalidFormat(msg),
+        IbdResult::ErrorCompression => IbdError::Compression,
+        IbdResult::ErrorDecompression => IbdError::Decompression,
+        IbdResult::ErrorEncryption => IbdError::Encryption,
+        IbdResult::ErrorDecryption => IbdError::Decryption,
+        IbdResult::ErrorMemory => IbdError::Memory,
+        IbdResult::ErrorNotImplemented => IbdError::NotImplemented,
+        IbdResult::ErrorKeyring => IbdError::Keyring,
+        IbdResult::ErrorUnknown => IbdError::Library(msg),
     }
 }
 
@@ -186,9 +207,12 @@ impl IbdRow {
         unsafe {
             let mut value: ffi::IbdColumnValue = std::mem::zeroed();
             let result = ffi::ibd_row_get_column(self.handle, index, &mut value);
-
-            if result != 0 {
-                return Err(IbdError::Library("Failed to get column value".to_string()));
+            let ibd_result = IbdResult::from(result);
+            if ibd_result != IbdResult::Success {
+                return Err(ibd_error_from_result(
+                    ibd_result,
+                    Some("Failed to get column value".to_string()),
+                ));
             }
 
             if value.is_null != 0 {
@@ -198,9 +222,7 @@ impl IbdRow {
             let col_type = IbdColumnType::from(value.col_type);
 
             // Use formatted string for most types as it's pre-formatted correctly
-            let formatted = CStr::from_ptr(value.formatted.as_ptr())
-                .to_string_lossy()
-                .to_string();
+            let formatted = formatted_to_string(&value.formatted);
 
             match col_type {
                 IbdColumnType::Int => Ok(ColumnValue::Int(value.value.int_val)),
@@ -284,13 +306,21 @@ impl IbdTable {
             let mut row_handle: ffi::IbdRowHandle = ptr::null_mut();
             let result = ffi::ibd_read_row(self.handle, &mut row_handle);
 
-            if result != 0 {
-                // No more rows
-                return Ok(None);
+            let ibd_result = IbdResult::from(result);
+            if ibd_result != IbdResult::Success {
+                if ibd_result == IbdResult::ErrorFileRead {
+                    return Ok(None);
+                }
+                return Err(ibd_error_from_result(
+                    ibd_result,
+                    Some("Failed to read row".to_string()),
+                ));
             }
 
             if row_handle.is_null() {
-                return Ok(None);
+                return Err(IbdError::Library(
+                    "Reader returned success with null row handle".to_string(),
+                ));
             }
 
             let column_count = ffi::ibd_row_column_count(row_handle);
@@ -372,9 +402,10 @@ impl IbdReader {
                 &mut table_handle,
             );
 
-            if result != 0 {
+            let ibd_result = IbdResult::from(result);
+            if ibd_result != IbdResult::Success {
                 let err = self.last_error().unwrap_or_else(|| "Unknown error".to_string());
-                return Err(IbdError::FileRead(err));
+                return Err(ibd_error_from_result(ibd_result, Some(err)));
             }
 
             if table_handle.is_null() {
@@ -385,12 +416,20 @@ impl IbdReader {
             let mut name_buf = vec![0u8; 256];
             let mut column_count: u32 = 0;
 
-            ffi::ibd_get_table_info(
+            let table_info_result = ffi::ibd_get_table_info(
                 table_handle,
                 name_buf.as_mut_ptr() as *mut i8,
                 name_buf.len(),
                 &mut column_count,
             );
+            let ibd_table_info = IbdResult::from(table_info_result);
+            if ibd_table_info != IbdResult::Success {
+                ffi::ibd_close_table(table_handle);
+                return Err(ibd_error_from_result(
+                    ibd_table_info,
+                    Some("Failed to read table info".to_string()),
+                ));
+            }
 
             let table_name = CStr::from_ptr(name_buf.as_ptr() as *const i8)
                 .to_string_lossy()
@@ -402,13 +441,21 @@ impl IbdReader {
                 let mut col_name_buf = vec![0u8; 128];
                 let mut col_type: i32 = 0;
 
-                ffi::ibd_get_column_info(
+                let col_result = ffi::ibd_get_column_info(
                     table_handle,
                     i,
                     col_name_buf.as_mut_ptr() as *mut i8,
                     col_name_buf.len(),
                     &mut col_type,
                 );
+                let ibd_col_result = IbdResult::from(col_result);
+                if ibd_col_result != IbdResult::Success {
+                    ffi::ibd_close_table(table_handle);
+                    return Err(ibd_error_from_result(
+                        ibd_col_result,
+                        Some(format!("Failed to read column info for index {}", i)),
+                    ));
+                }
 
                 let col_name = CStr::from_ptr(col_name_buf.as_ptr() as *const i8)
                     .to_string_lossy()
@@ -450,6 +497,15 @@ pub fn version() -> String {
     }
 }
 
+fn formatted_to_string(formatted: &[c_char]) -> String {
+    let len = formatted
+        .iter()
+        .position(|c| *c == 0)
+        .unwrap_or(formatted.len());
+    let bytes: Vec<u8> = formatted[..len].iter().map(|c| *c as u8).collect();
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
 fn path_to_cstring(path: &Path) -> Result<CString, IbdError> {
     let path_str = path.to_str().ok_or_else(|| {
         IbdError::InvalidPath(format!("Path contains invalid UTF-8: {:?}", path))
@@ -469,15 +525,39 @@ mod hex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn ibd_lib_available() -> bool {
+        let mut candidates = Vec::new();
+
+        if let Ok(path) = std::env::var("IBD_READER_LIB_PATH") {
+            candidates.push(Path::new(&path).to_path_buf());
+        } else {
+            let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+            candidates.push(manifest_dir.join("../../percona-parser/build"));
+        }
+
+        candidates.into_iter().any(|path| {
+            path.join("libibd_reader.so").exists()
+                || path.join("libibd_reader.dylib").exists()
+                || path.join("ibd_reader.dll").exists()
+        })
+    }
 
     #[test]
     fn test_version() {
+        if !ibd_lib_available() {
+            return;
+        }
         let v = version();
         assert!(!v.is_empty());
     }
 
     #[test]
     fn test_create_reader() {
+        if !ibd_lib_available() {
+            return;
+        }
         let reader = IbdReader::new();
         assert!(reader.is_ok());
     }

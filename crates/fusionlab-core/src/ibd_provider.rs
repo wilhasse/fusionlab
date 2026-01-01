@@ -3,7 +3,9 @@
 //! Allows reading MySQL InnoDB data files directly as DataFusion tables.
 
 use async_trait::async_trait;
-use datafusion::arrow::array::{ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray};
+use datafusion::arrow::array::{
+    ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray, UInt64Array,
+};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::datasource::{TableProvider, TableType};
@@ -23,7 +25,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use fusionlab_ibd::{ColumnType, IbdReader};
+use fusionlab_ibd::{ColumnType, ColumnValue, IbdReader};
 
 /// Configuration for an InnoDB table
 #[derive(Debug, Clone)]
@@ -101,10 +103,12 @@ impl IbdTableProvider {
     }
 }
 
+const DEFAULT_BATCH_SIZE: usize = 1024;
+
 fn ibd_to_arrow_type(ibd_type: ColumnType) -> DataType {
     match ibd_type {
         ColumnType::Int => DataType::Int64,
-        ColumnType::UInt => DataType::Int64, // Arrow doesn't have unsigned, use Int64
+        ColumnType::UInt => DataType::UInt64,
         ColumnType::Float | ColumnType::Double => DataType::Float64,
         // All other types stored as formatted strings for simplicity
         // TODO: Parse temporal types to native Arrow Date32/Timestamp for better performance
@@ -248,103 +252,179 @@ impl ExecutionPlan for IbdExec {
         let projection = self.projection.clone();
         let schema = self.projected_schema.clone();
 
-        // Read all rows and convert to RecordBatch
-        let batches = read_ibd_to_batches(&config, &column_mapping, projection.as_ref(), &schema)
-            .map_err(|e| datafusion::error::DataFusionError::External(e))?;
+        let state = IbdStreamState::try_new(
+            &config,
+            &column_mapping,
+            projection.as_ref(),
+            schema.clone(),
+        )
+            .map_err(datafusion::error::DataFusionError::External)?;
 
-        let stream = stream::iter(batches.into_iter().map(Ok));
+        let stream = stream::try_unfold(state, |mut state| async move {
+            let batch = state
+                .read_next_batch()
+                .map_err(datafusion::error::DataFusionError::External)?;
+            Ok(batch.map(|b| (b, state)))
+        });
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 }
 
-fn read_ibd_to_batches(
-    config: &IbdTableConfig,
-    column_mapping: &[(String, ColumnType, usize)],
-    projection: Option<&Vec<usize>>,
-    schema: &SchemaRef,
-) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
-    let reader = IbdReader::new()?;
-    let mut table = reader.open_table(&config.ibd_path, &config.sdi_path)?;
-
-    // Collect all rows
-    let mut all_rows: Vec<Vec<fusionlab_ibd::ColumnValue>> = Vec::new();
-
-    while let Some(row) = table.next_row()? {
-        let mut row_values = Vec::with_capacity(column_mapping.len());
-        for (_, _, ibd_idx) in column_mapping {
-            row_values.push(row.get(*ibd_idx as u32)?);
-        }
-        all_rows.push(row_values);
-    }
-
-    if all_rows.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Build Arrow arrays based on projection
-    let indices: Vec<usize> = match projection {
-        Some(proj) => proj.clone(),
-        None => (0..column_mapping.len()).collect(),
-    };
-
-    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(indices.len());
-
-    for &col_idx in &indices {
-        let (_, col_type, _) = &column_mapping[col_idx];
-        let arrow_type = schema.field(arrays.len()).data_type();
-
-        let array = build_array_from_values(&all_rows, col_idx, *col_type, arrow_type);
-        arrays.push(array);
-    }
-
-    let batch = RecordBatch::try_new(schema.clone(), arrays)?;
-    Ok(vec![batch])
+struct ProjectedColumn {
+    col_type: ColumnType,
+    ibd_index: u32,
 }
 
-fn build_array_from_values(
-    rows: &[Vec<fusionlab_ibd::ColumnValue>],
-    col_idx: usize,
-    col_type: ColumnType,
-    _arrow_type: &DataType,
-) -> ArrayRef {
-    use fusionlab_ibd::ColumnValue;
+enum ColumnBuilder {
+    Int(Vec<Option<i64>>),
+    UInt(Vec<Option<u64>>),
+    Float(Vec<Option<f64>>),
+    String(Vec<Option<String>>),
+}
 
-    match col_type {
-        ColumnType::Int | ColumnType::UInt => {
-            let values: Vec<Option<i64>> = rows
-                .iter()
-                .map(|row| match &row[col_idx] {
+impl ColumnBuilder {
+    fn with_capacity(col_type: ColumnType, capacity: usize) -> Self {
+        match col_type {
+            ColumnType::Int => ColumnBuilder::Int(Vec::with_capacity(capacity)),
+            ColumnType::UInt => ColumnBuilder::UInt(Vec::with_capacity(capacity)),
+            ColumnType::Float | ColumnType::Double => {
+                ColumnBuilder::Float(Vec::with_capacity(capacity))
+            }
+            _ => ColumnBuilder::String(Vec::with_capacity(capacity)),
+        }
+    }
+
+    fn push(&mut self, value: ColumnValue) {
+        match self {
+            ColumnBuilder::Int(values) => {
+                let parsed = match value {
                     ColumnValue::Null => None,
-                    ColumnValue::Int(v) => Some(*v),
-                    ColumnValue::UInt(v) => Some(*v as i64),
+                    ColumnValue::Int(v) => Some(v),
                     ColumnValue::Formatted(s) => s.parse().ok(),
                     _ => None,
-                })
-                .collect();
-            Arc::new(Int64Array::from(values))
-        }
-        ColumnType::Float | ColumnType::Double => {
-            let values: Vec<Option<f64>> = rows
-                .iter()
-                .map(|row| match &row[col_idx] {
+                };
+                values.push(parsed);
+            }
+            ColumnBuilder::UInt(values) => {
+                let parsed = match value {
                     ColumnValue::Null => None,
-                    ColumnValue::Float(v) => Some(*v),
+                    ColumnValue::UInt(v) => Some(v),
                     ColumnValue::Formatted(s) => s.parse().ok(),
                     _ => None,
-                })
-                .collect();
-            Arc::new(Float64Array::from(values))
-        }
-        _ => {
-            // String-based types (including temporal, decimal, etc.)
-            let values: Vec<Option<String>> = rows
-                .iter()
-                .map(|row| match &row[col_idx] {
+                };
+                values.push(parsed);
+            }
+            ColumnBuilder::Float(values) => {
+                let parsed = match value {
+                    ColumnValue::Null => None,
+                    ColumnValue::Float(v) => Some(v),
+                    ColumnValue::Formatted(s) => s.parse().ok(),
+                    _ => None,
+                };
+                values.push(parsed);
+            }
+            ColumnBuilder::String(values) => {
+                let parsed = match value {
                     ColumnValue::Null => None,
                     v => Some(v.as_string()),
-                })
-                .collect();
-            Arc::new(StringArray::from(values))
+                };
+                values.push(parsed);
+            }
         }
+    }
+
+    fn finish(self) -> ArrayRef {
+        match self {
+            ColumnBuilder::Int(values) => Arc::new(Int64Array::from(values)),
+            ColumnBuilder::UInt(values) => Arc::new(UInt64Array::from(values)),
+            ColumnBuilder::Float(values) => Arc::new(Float64Array::from(values)),
+            ColumnBuilder::String(values) => Arc::new(StringArray::from(values)),
+        }
+    }
+}
+
+struct IbdStreamState {
+    _reader: IbdReader,
+    table: fusionlab_ibd::IbdTable,
+    projected_columns: Vec<ProjectedColumn>,
+    schema: SchemaRef,
+    batch_size: usize,
+    done: bool,
+}
+
+impl IbdStreamState {
+    fn try_new(
+        config: &IbdTableConfig,
+        column_mapping: &[(String, ColumnType, usize)],
+        projection: Option<&Vec<usize>>,
+        schema: SchemaRef,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let reader = IbdReader::new()?;
+        let table = reader.open_table(&config.ibd_path, &config.sdi_path)?;
+
+        let indices: Vec<usize> = match projection {
+            Some(proj) => proj.clone(),
+            None => (0..column_mapping.len()).collect(),
+        };
+
+        let projected_columns = indices
+            .into_iter()
+            .map(|idx| {
+                let (_, col_type, ibd_idx) = &column_mapping[idx];
+                ProjectedColumn {
+                    col_type: *col_type,
+                    ibd_index: *ibd_idx as u32,
+                }
+            })
+            .collect();
+
+        Ok(Self {
+            _reader: reader,
+            table,
+            projected_columns,
+            schema,
+            batch_size: DEFAULT_BATCH_SIZE,
+            done: false,
+        })
+    }
+
+    fn read_next_batch(
+        &mut self,
+    ) -> Result<Option<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
+        if self.done {
+            return Ok(None);
+        }
+
+        let mut builders: Vec<ColumnBuilder> = self
+            .projected_columns
+            .iter()
+            .map(|col| ColumnBuilder::with_capacity(col.col_type, self.batch_size))
+            .collect();
+
+        let mut rows_read = 0usize;
+
+        while rows_read < self.batch_size {
+            match self.table.next_row()? {
+                Some(row) => {
+                    for (builder, col) in builders.iter_mut().zip(self.projected_columns.iter()) {
+                        let value = row.get(col.ibd_index)?;
+                        builder.push(value);
+                    }
+                    rows_read += 1;
+                }
+                None => {
+                    self.done = true;
+                    break;
+                }
+            }
+        }
+
+        if rows_read == 0 {
+            return Ok(None);
+        }
+
+        let arrays: Vec<ArrayRef> = builders.into_iter().map(|b| b.finish()).collect();
+        let batch = RecordBatch::try_new(self.schema.clone(), arrays)?;
+        Ok(Some(batch))
     }
 }
