@@ -479,10 +479,14 @@ mod tests {
         }
 
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let default_path = manifest_dir.join("../../percona-parser/build");
-        default_path.join("libibd_reader.so").exists()
-            || default_path.join("libibd_reader.dylib").exists()
-            || default_path.join("ibd_reader.dll").exists()
+        let default_path = manifest_dir.join("../../..").join("percona-parser/build");
+        let fallback_path = manifest_dir.join("../../percona-parser/build");
+        let candidates = [default_path, fallback_path];
+        candidates.into_iter().any(|path| {
+            path.join("libibd_reader.so").exists()
+                || path.join("libibd_reader.dylib").exists()
+                || path.join("ibd_reader.dll").exists()
+        })
     }
 
     #[tokio::test]

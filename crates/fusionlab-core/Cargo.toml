@@ -2,6 +2,7 @@
 name = "fusionlab-core"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 
 [dependencies]
 mysql_async = "0.34"

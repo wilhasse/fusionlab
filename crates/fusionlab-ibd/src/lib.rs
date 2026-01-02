@@ -544,6 +544,7 @@ mod tests {
             candidates.push(Path::new(&path).to_path_buf());
         } else {
             let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+            candidates.push(manifest_dir.join("../../..").join("percona-parser/build"));
             candidates.push(manifest_dir.join("../../percona-parser/build"));
         }
 
