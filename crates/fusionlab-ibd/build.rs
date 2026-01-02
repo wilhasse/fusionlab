@@ -16,6 +16,9 @@ fn main() {
         println!("cargo:rustc-link-search=native={}", lib_path.display());
         println!("cargo:rustc-link-lib=dylib=ibd_reader");
         println!("cargo:rustc-cfg=ibd_reader_available");
+        if std::env::var("CARGO_CFG_TARGET_FAMILY").as_deref() == Ok("unix") {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_path.display());
+        }
     } else {
         println!(
             "cargo:warning=IBD reader library path not found: {}",
