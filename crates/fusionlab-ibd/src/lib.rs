@@ -74,6 +74,7 @@ fn ibd_error_from_result(result: IbdResult, message: Option<String>) -> IbdError
     let msg = message.unwrap_or_else(|| "Unknown error".to_string());
     match result {
         IbdResult::Success => IbdError::Library("Unexpected success".to_string()),
+        IbdResult::EndOfStream => IbdError::Library("Unexpected end of stream".to_string()),
         IbdResult::ErrorInvalidParam => IbdError::InvalidParam,
         IbdResult::ErrorFileNotFound => IbdError::FileNotFound(msg),
         IbdResult::ErrorFileRead => IbdError::FileRead(msg),
@@ -314,10 +315,10 @@ impl IbdTable {
             let result = ffi::ibd_read_row(self.handle, &mut row_handle);
 
             let ibd_result = IbdResult::from(result);
+            if ibd_result == IbdResult::EndOfStream {
+                return Ok(None); // No more rows
+            }
             if ibd_result != IbdResult::Success {
-                if ibd_result == IbdResult::ErrorFileRead {
-                    return Ok(None);
-                }
                 return Err(ibd_error_from_result(
                     ibd_result,
                     Some("Failed to read row".to_string()),

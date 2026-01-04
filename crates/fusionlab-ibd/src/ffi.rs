@@ -10,6 +10,7 @@ use std::os::raw::c_void;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IbdResult {
     Success = 0,
+    EndOfStream = 1,
     ErrorInvalidParam = -1,
     ErrorFileNotFound = -2,
     ErrorFileRead = -3,
@@ -29,6 +30,7 @@ impl From<i32> for IbdResult {
     fn from(code: i32) -> Self {
         match code {
             0 => IbdResult::Success,
+            1 => IbdResult::EndOfStream,
             -1 => IbdResult::ErrorInvalidParam,
             -2 => IbdResult::ErrorFileNotFound,
             -3 => IbdResult::ErrorFileRead,
