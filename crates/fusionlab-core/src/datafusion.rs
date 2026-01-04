@@ -620,16 +620,18 @@ mod tests {
         runner.register_ibd(None, &types_ibd, &types_sdi).unwrap();
         runner.register_ibd(None, &json_ibd, &json_sdi).unwrap();
 
-        let result = runner
-            .run_query_collect(
-                "SELECT t.id, j.id \
-                 FROM types_fixture t \
-                 JOIN json_fixture j \
-                 ON t.id = j.id \
-                 LIMIT 1",
-            )
-            .await
-            .unwrap();
+        let sql = "SELECT t.id, j.id \
+                   FROM types_fixture t \
+                   JOIN json_fixture j \
+                   ON t.id = j.id \
+                   LIMIT 1";
+        println!("[Query] {}", sql);
+        let logical = runner.explain(sql).await.unwrap();
+        println!("[Logical Plan]\n{}", logical);
+        let physical = runner.explain_physical(sql).await.unwrap();
+        println!("[Physical Plan]\n{}", physical);
+
+        let result = runner.run_query_collect(sql).await.unwrap();
 
         assert!(result.row_count <= 1);
     }
