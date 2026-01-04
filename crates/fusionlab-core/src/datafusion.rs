@@ -562,4 +562,39 @@ mod tests {
 
         assert!(result.row_count > 0);
     }
+
+    #[tokio::test]
+    async fn test_ibd_multi_table_join() {
+        let runner = DataFusionRunner::new();
+
+        let base_dir = "/home/cslog/mysql/percona-parser/tests";
+        let types_ibd = format!("{}/types_test.ibd", base_dir);
+        let types_sdi = format!("{}/types_test_sdi.json", base_dir);
+        let json_ibd = format!("{}/json_test.ibd", base_dir);
+        let json_sdi = format!("{}/json_test_sdi.json", base_dir);
+
+        if !ibd_available()
+            || !Path::new(&types_ibd).exists()
+            || !Path::new(&types_sdi).exists()
+            || !Path::new(&json_ibd).exists()
+            || !Path::new(&json_sdi).exists()
+        {
+            return;
+        }
+
+        runner.register_ibd(None, &types_ibd, &types_sdi).unwrap();
+        runner.register_ibd(None, &json_ibd, &json_sdi).unwrap();
+
+        let result = runner
+            .run_query_collect(
+                "SELECT t.id, j.id \
+                 FROM types_fixture t \
+                 CROSS JOIN json_fixture j \
+                 LIMIT 1",
+            )
+            .await
+            .unwrap();
+
+        assert!(result.row_count > 0);
+    }
 }
